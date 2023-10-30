@@ -25,6 +25,7 @@ from google.cloud import pubsub_v1
 from impl.database.database import JsonDatabase
 
 PROJECT_ID = os.environ['GOOGLE_CLOUD_PROJECT']
+DEBUG = ('DEBUG_GOOGLE' in os.environ)
 
 PUBSUB_SUBSCRIPTION = 'codelab'
 
@@ -33,6 +34,8 @@ PROCUREMENT_API = 'cloudcommerceprocurement'
 
 def _generate_internal_account_id():
     ### TODO: Replace with whatever ID generation code already exists. ###
+    if DEBUG:
+        print('in _generate_internal_account_id')
     return str(uuid.uuid4())
 
 
@@ -48,9 +51,14 @@ class Procurement(object):
     ##########################
 
     def _get_account_id(self, name):
+        if DEBUG:
+            print('in _get_account_id:name:' + name)
+            print('in _get_account_id/procurementid:' + name[len('providers/DEMO-{}/accounts/'.format(PROJECT_ID)):])
         return name[len('providers/DEMO-{}/accounts/'.format(PROJECT_ID)):]
 
     def _get_account_name(self, account_id):
+        if DEBUG:
+            print('in _get_account_name:'+ 'providers/DEMO-{}/accounts/{}'.format(PROJECT_ID, account_id))
         return 'providers/DEMO-{}/accounts/{}'.format(PROJECT_ID,
                                                       account_id)
 
@@ -58,6 +66,9 @@ class Procurement(object):
         """Gets an account from the Procurement Service."""
         name = self._get_account_name(account_id)
         request = self.service.providers().accounts().get(name=name)
+        if DEBUG:
+            print('in _get_account:request:',end="")
+            pprint.pprint(request)
         try:
             response = request.execute()
             return response
@@ -75,6 +86,8 @@ class Procurement(object):
     def handle_account_message(self, message):
         """Handles incoming Pub/Sub messages about account resources."""
 
+        if DEBUG:
+            print('in handle_account_message')
         account_id = message['id']
 
         customer = self.database.read(account_id)
@@ -124,6 +137,8 @@ class Procurement(object):
     ##############################
 
     def _get_entitlement_name(self, entitlement_id):
+        if DEBUG:
+            print('_get_entitlement_name:' + 'providers/DEMO-{}/entitlements/{}'.format(PROJECT_ID,entitlement_id))
         return 'providers/DEMO-{}/entitlements/{}'.format(PROJECT_ID,
                                                           entitlement_id)
 
@@ -131,6 +146,12 @@ class Procurement(object):
         """Gets an entitlement from the Procurement Service."""
         name = self._get_entitlement_name(entitlement_id)
         request = self.service.providers().entitlements().get(name=name)
+        if DEBUG:
+            print('get_entitlement:request:name:' + name)
+            print('get_entitlement:request:entitlement_id:' + entitlement_id)
+            print('get_entitlement:request:', end="")
+            pprint.pprint(request)
+            print()
         try:
             response = request.execute()
             return response
@@ -175,19 +196,32 @@ class Procurement(object):
 
         entitlement = self.get_entitlement(entitlement_id)
 
+        if DEBUG:
+            print('handle_entitlement_message:entitlement_id:' + entitlement_id)
+            print('handle_entitlement_message:entitlement:', end="")
+            pprint.pprint(entitlement)
+            print()
         if not entitlement:
-            ### TODO: Complete in section 5. ###
-            return False
+            # Do nothing. The entitlement has to be canceled to be deleted, so
+            # this has already been handled by a cancellation message.
+            return True
 
-        account_id = self._get_account_id(entitlement['account'])
-        customer = self.database.read(account_id)
-
+        google_account_id = self._get_account_id(entitlement['account'])
+        customer = self.database.read(google_account_id)
         state = entitlement['state']
+        if DEBUG:
+            print('google_account_id:' + google_account_id)
+            print('customer:',end="")
+            pprint.pprint(customer)
+            print()
 
         if not customer:
             # If the record for this customer does not exist, don't ack the
             # message and wait until an account message is handled and a record
             # is created.
+            # this case should not happed. account creation should always happen first.
+            # if account event comes after this request, then handling this message requires
+            # restarting the process
             return False
 
         if event_type == 'ENTITLEMENT_CREATION_REQUESTED':
@@ -197,12 +231,17 @@ class Procurement(object):
                 # customer and updating our records.
                 self.approve_entitlement(entitlement_id)
                 return True
+            elif state == 'ENTITLEMENT_ACTIVE':
+                # means activate request already done
+                # but message ack must have been dropped
+                # nohing to do, just ack it.
+                return True
 
         elif event_type == 'ENTITLEMENT_ACTIVE':
             if state == 'ENTITLEMENT_ACTIVE':
                 # Handle an active entitlement by writing to the database.
                 self.handle_active_entitlement(entitlement, customer,
-                                               account_id)
+                                               google_account_id)
                 return True
 
         elif event_type == 'ENTITLEMENT_PLAN_CHANGE_REQUESTED':
@@ -217,7 +256,7 @@ class Procurement(object):
             if state == 'ENTITLEMENT_ACTIVE':
                 # Handle an active entitlement after a plan change.
                 self.handle_active_entitlement(entitlement, customer,
-                                               account_id)
+                                               google_account_id)
                 return True
 
         elif event_type == 'ENTITLEMENT_PLAN_CHANGE_CANCELLED':
@@ -226,20 +265,29 @@ class Procurement(object):
             return True
 
         elif event_type == 'ENTITLEMENT_CANCELLED':
-            ### TODO: Complete in section 5. ###
-            pass
+            if state == 'ENTITLEMENT_CANCELLED':
+                # Clear out our records of the customer's plan.
+                if entitlement['product'] in customer['products']:
+                    del customer['products'][entitlement['product']]
+
+                    ### TODO: Turn off customer's service. ###
+                    self.database.write(google_account_id, customer)
+                return True
 
         elif event_type == 'ENTITLEMENT_PENDING_CANCELLATION':
-            ### TODO: Complete in section 5. ###
-            pass
+            # Do nothing. We want to cancel once it's truly canceled. For now
+            # it's just set to not renew at the end of the billing cycle.
+            return True
 
         elif event_type == 'ENTITLEMENT_CANCELLATION_REVERTED':
-            ### TODO: Complete in section 5. ###
-            pass
+            # Do nothing. The service was already active, but now it's set to
+            # renew automatically at the end of the billing cycle.
+            return True
 
         elif event_type == 'ENTITLEMENT_DELETED':
-            ### TODO: Complete in section 5. ###
-            pass
+            # Do nothing. The entitlement has to be canceled to be deleted, so
+            # this has already been handled by a cancellation message.
+            return True
 
         return False
 
@@ -248,7 +296,7 @@ def main(argv):
     """Main entrypoint to the integration with the Procurement Service."""
 
     if len(argv) != 1:
-        print('Usage: python3 -m impl.step_4_entitlement_change.app')
+        print('Usage: python3 -m impl.suse-mpl.app')
         return
 
     # Construct a service for the Partner Procurement API.
@@ -264,7 +312,7 @@ def main(argv):
         """Callback for handling Cloud Pub/Sub messages."""
         payload = json.loads(message.data)
 
-        print('Received message:')
+        print('callback:message:data', end="")
         pprint.pprint(payload)
         print()
 
@@ -279,14 +327,23 @@ def main(argv):
             # message. This should never happen.
             ack = True
 
+        # ideally all possiblities should have been handled above and
+        # ack should always be set, but just in case we check.
+        # in either case we ack, but want to not that we had an event we
+        # could not handle.
         if ack:
+            if DEBUG:
+                print("acking message:" + payload['eventId'])
+            message.ack()
+        else:
+            if DEBUG:
+                print("no ack, but ack anyway" + payload['eventId'])
             message.ack()
 
     subscription = subscriber.subscribe(subscription_path, callback=callback)
 
     print('Listening for messages on {}'.format(subscription_path))
     print('Exit with Ctrl-\\')
-
 
     while True:
         try:

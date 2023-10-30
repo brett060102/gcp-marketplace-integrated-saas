@@ -67,7 +67,7 @@ def main(argv):
 
     for customer_id, customer in database.items():
         for product_id, product in customer['products'].items():
-            if 'consumer_id' not in product:
+            if 'usageReportingId' not in product:
                 continue
             end_time = datetime.datetime.utcnow().strftime(TIME_FORMAT)
             start_time = None
@@ -79,7 +79,7 @@ def main(argv):
             operation = {
                 'operationId': str(uuid.uuid4()),
                 'operationName': 'Codelab Usage Report',
-                'consumerId': product['consumer_id'],
+                'consumer_id': product[usageReportingId''],
                 'startTime': start_time,
                 'endTime': end_time,
                 'metricValueSets': [{

@@ -162,7 +162,7 @@ class Procurement(object):
         }
 
         if 'usageReportingId' in entitlement:
-            product['consumer_id'] = entitlement['usageReportingId']
+            product[usageReportingId''] = entitlement['usageReportingId']
 
         customer['products'][entitlement['product']] = product
 
