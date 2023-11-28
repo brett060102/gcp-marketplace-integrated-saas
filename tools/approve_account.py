@@ -39,8 +39,13 @@ def main(argv):
     procurement = build(PROCUREMENT_API, 'v1', cache_discovery=False)
 
     account_name = _get_account_name(account_id)
-    request = procurement.providers().accounts().reset(name=account_name)
-    request.execute()
+    # The account is reset as pending approval status. There is no
+    # account message notifying API clients. To unblock the testing
+    # approve the account.
+    time.sleep(20) # Waiting for reset completion
+    approve_request = procurement.providers().accounts().approve(
+        name=account_name, body={'approvalName': 'signup'})
+    approve_request.execute()
 
 if __name__ == '__main__':
     main(sys.argv)
